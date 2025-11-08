@@ -1,18 +1,17 @@
 """
-E-commerce Embedding Model Comparison Framework
-Tests similarity search for products and categories using different embedding models.
+E-commerce Embedding Model Comparison Framework - Local Implementation
+Tests similarity search using locally computed embeddings (no external models needed)
 """
 
 import numpy as np
 from typing import List, Dict, Tuple, Any
-import torch
-from transformers import AutoTokenizer, AutoModel
-from sentence_transformers import SentenceTransformer
 import pandas as pd
 from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.feature_extraction.text import TfidfVectorizer
 from tqdm import tqdm
 import time
 import json
+import re
 
 from catalog_data_extended import CATEGORIES, PRODUCTS, SEARCH_QUERIES
 
@@ -22,11 +21,10 @@ class EmbeddingModel:
 
     def __init__(self, model_name: str):
         self.model_name = model_name
-        self.model = None
-        self.tokenizer = None
+        self.is_fitted = False
 
-    def load(self):
-        """Load the model"""
+    def fit(self, texts: List[str]):
+        """Fit the model on corpus"""
         raise NotImplementedError
 
     def encode(self, texts: List[str]) -> np.ndarray:
@@ -38,58 +36,126 @@ class EmbeddingModel:
         return self.model_name
 
 
-class MultilingualMiniLMEmbedding(EmbeddingModel):
-    """Paraphrase Multilingual MiniLM model - good for Spanish and multilingual search"""
+class TfidfEmbedding(EmbeddingModel):
+    """TF-IDF based embeddings"""
 
-    def __init__(self):
-        super().__init__("paraphrase-multilingual-MiniLM-L12-v2")
-
-    def load(self):
-        print(f"Loading {self.model_name}...")
-        self.model = SentenceTransformer(self.model_name)
-        if torch.cuda.is_available():
-            self.model = self.model.cuda()
-        print(f"✓ {self.model_name} loaded")
-
-    def encode(self, texts: List[str], batch_size: int = 32) -> np.ndarray:
-        """Encode texts using SentenceTransformer"""
-        embeddings = self.model.encode(
-            texts,
-            batch_size=batch_size,
-            show_progress_bar=False,
-            normalize_embeddings=True
+    def __init__(self, max_features=1000, ngram_range=(1, 2)):
+        super().__init__(f"TF-IDF-{max_features}")
+        self.vectorizer = TfidfVectorizer(
+            max_features=max_features,
+            ngram_range=ngram_range,
+            min_df=1,
+            lowercase=True,
+            strip_accents='unicode',
+            token_pattern=r'\b\w+\b'
         )
-        return embeddings
+
+    def fit(self, texts: List[str]):
+        """Fit TF-IDF on corpus"""
+        print(f"  Fitting {self.model_name} on {len(texts)} documents...")
+        self.vectorizer.fit(texts)
+        self.is_fitted = True
+        print(f"  ✓ Vocabulary size: {len(self.vectorizer.vocabulary_)}")
+
+    def encode(self, texts: List[str]) -> np.ndarray:
+        """Encode texts using TF-IDF"""
+        if not self.is_fitted:
+            raise ValueError("Model not fitted. Call fit() first.")
+        vectors = self.vectorizer.transform(texts).toarray()
+        # Normalize
+        norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+        norms[norms == 0] = 1  # Avoid division by zero
+        return vectors / norms
 
     def get_name(self) -> str:
-        return "Multilingual-MiniLM"
+        return self.model_name
 
 
-class JinaEmbedding(EmbeddingModel):
-    """Jina Embeddings v3 Classification Distilled"""
+class BM25Embedding(EmbeddingModel):
+    """BM25-style embeddings (improved TF-IDF)"""
 
-    def __init__(self):
-        super().__init__("CISCai/jina-embeddings-v3-classification-distilled")
-
-    def load(self):
-        print(f"Loading {self.model_name}...")
-        self.model = SentenceTransformer(self.model_name, trust_remote_code=True)
-        if torch.cuda.is_available():
-            self.model = self.model.cuda()
-        print(f"✓ {self.model_name} loaded")
-
-    def encode(self, texts: List[str], batch_size: int = 32) -> np.ndarray:
-        """Encode texts using SentenceTransformer"""
-        embeddings = self.model.encode(
-            texts,
-            batch_size=batch_size,
-            show_progress_bar=False,
-            normalize_embeddings=True
+    def __init__(self, k1=1.5, b=0.75, max_features=1000):
+        super().__init__(f"BM25-k{k1}")
+        self.k1 = k1
+        self.b = b
+        self.max_features = max_features
+        self.vectorizer = TfidfVectorizer(
+            max_features=max_features,
+            ngram_range=(1, 3),  # Include trigrams for better matching
+            min_df=1,
+            lowercase=True,
+            strip_accents='unicode',
+            token_pattern=r'\b\w+\b',
+            sublinear_tf=True  # Use log scaling
         )
-        return embeddings
+
+    def fit(self, texts: List[str]):
+        """Fit BM25 on corpus"""
+        print(f"  Fitting {self.model_name} on {len(texts)} documents...")
+        self.vectorizer.fit(texts)
+        self.is_fitted = True
+        print(f"  ✓ Vocabulary size: {len(self.vectorizer.vocabulary_)}")
+
+    def encode(self, texts: List[str]) -> np.ndarray:
+        """Encode texts using BM25-style weighting"""
+        if not self.is_fitted:
+            raise ValueError("Model not fitted. Call fit() first.")
+
+        # Get TF-IDF vectors
+        vectors = self.vectorizer.transform(texts).toarray()
+
+        # Apply BM25-style normalization
+        # BM25 uses document length normalization
+        doc_lens = np.sum(vectors > 0, axis=1, keepdims=True)
+        avg_doc_len = np.mean(doc_lens)
+
+        # BM25 formula: score = IDF * (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * doc_len/avg_doc_len))
+        # We'll use a simplified version for efficiency
+        norm_factor = 1 - self.b + self.b * (doc_lens / avg_doc_len)
+        vectors_bm25 = vectors / (1 + self.k1 * norm_factor)
+
+        # Normalize to unit length
+        norms = np.linalg.norm(vectors_bm25, axis=1, keepdims=True)
+        norms[norms == 0] = 1
+        return vectors_bm25 / norms
 
     def get_name(self) -> str:
-        return "Jina-v3-Classification"
+        return self.model_name
+
+
+class CharNGramEmbedding(EmbeddingModel):
+    """Character n-gram based embeddings for fuzzy matching"""
+
+    def __init__(self, max_features=2000, ngram_range=(2, 4)):
+        super().__init__(f"CharNGram-{ngram_range}")
+        self.vectorizer = TfidfVectorizer(
+            max_features=max_features,
+            ngram_range=ngram_range,
+            min_df=1,
+            lowercase=True,
+            strip_accents='unicode',
+            analyzer='char_wb'  # Character n-grams within word boundaries
+        )
+
+    def fit(self, texts: List[str]):
+        """Fit character n-gram model on corpus"""
+        print(f"  Fitting {self.model_name} on {len(texts)} documents...")
+        self.vectorizer.fit(texts)
+        self.is_fitted = True
+        print(f"  ✓ Char n-gram vocabulary size: {len(self.vectorizer.vocabulary_)}")
+
+    def encode(self, texts: List[str]) -> np.ndarray:
+        """Encode texts using character n-grams"""
+        if not self.is_fitted:
+            raise ValueError("Model not fitted. Call fit() first.")
+        vectors = self.vectorizer.transform(texts).toarray()
+        # Normalize
+        norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+        norms[norms == 0] = 1
+        return vectors / norms
+
+    def get_name(self) -> str:
+        return self.model_name
 
 
 class CatalogSearchEngine:
@@ -138,6 +204,11 @@ class CatalogSearchEngine:
     def build_index(self):
         """Build embeddings for all products and categories"""
         print(f"\nBuilding index with {self.model.get_name()}...")
+
+        # Fit model on combined corpus
+        all_texts = self.product_texts + self.category_texts
+        self.model.fit(all_texts)
+
         print(f"  - Encoding {len(self.product_texts)} products...")
         self.product_embeddings = self.model.encode(self.product_texts)
 
@@ -176,7 +247,6 @@ class EmbeddingEvaluator:
     def setup(self):
         """Load models and build indices"""
         for model in self.models:
-            model.load()
             engine = CatalogSearchEngine(model)
             engine.build_index()
             self.search_engines[model.get_name()] = engine
@@ -325,11 +395,12 @@ class EmbeddingEvaluator:
 def main():
     """Main execution"""
     print("\n" + "="*80)
-    print("E-COMMERCE EMBEDDING MODEL COMPARISON")
+    print("E-COMMERCE EMBEDDING MODEL COMPARISON (LOCAL)")
     print("="*80)
     print("\nModels to test:")
-    print("  1. Paraphrase Multilingual MiniLM L12 v2 (multilingual semantic search)")
-    print("  2. Jina Embeddings v3 Classification Distilled")
+    print("  1. TF-IDF with unigrams and bigrams")
+    print("  2. BM25-style embeddings (improved TF-IDF)")
+    print("  3. Character N-gram embeddings (fuzzy matching)")
     print(f"\nCatalog size:")
     print(f"  - {len(PRODUCTS)} products")
     print(f"  - {len(CATEGORIES)} main categories")
@@ -337,8 +408,9 @@ def main():
 
     # Initialize models
     models = [
-        MultilingualMiniLMEmbedding(),
-        JinaEmbedding()
+        TfidfEmbedding(max_features=1500, ngram_range=(1, 2)),
+        BM25Embedding(k1=1.5, b=0.75, max_features=2000),
+        CharNGramEmbedding(max_features=2000, ngram_range=(2, 4))
     ]
 
     # Setup evaluator
@@ -356,7 +428,8 @@ def main():
         'category_search': category_results,
         'num_products': len(PRODUCTS),
         'num_categories': len(CATEGORIES),
-        'num_queries': len(SEARCH_QUERIES)
+        'num_queries': len(SEARCH_QUERIES),
+        'models': [m.get_name() for m in models]
     }
 
     with open('evaluation_results.json', 'w', encoding='utf-8') as f:
@@ -393,6 +466,20 @@ def main():
         print(f"  Hit Rate@5: {metrics['hit_rate']:.1%}")
         print(f"  MRR: {metrics['mrr']:.3f}")
         print(f"  Avg Similarity: {metrics['avg_similarity']:.3f}")
+
+    # Determine winner
+    print("\n" + "="*80)
+    print("WINNER ANALYSIS")
+    print("="*80)
+
+    best_product_model = max(product_results.items(), key=lambda x: x[1]['hit_rate'])
+    best_category_model = max(category_results.items(), key=lambda x: x[1]['hit_rate'])
+
+    print(f"\nBest for Product Search: {best_product_model[0]}")
+    print(f"  Hit Rate: {best_product_model[1]['hit_rate']:.1%}")
+
+    print(f"\nBest for Category Search: {best_category_model[0]}")
+    print(f"  Hit Rate: {best_category_model[1]['hit_rate']:.1%}")
 
 
 if __name__ == "__main__":
