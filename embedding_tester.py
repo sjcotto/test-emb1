@@ -14,7 +14,7 @@ from tqdm import tqdm
 import time
 import json
 
-from catalog_data import CATEGORIES, PRODUCTS, SEARCH_QUERIES
+from catalog_data_extended import CATEGORIES, PRODUCTS, SEARCH_QUERIES
 
 
 class EmbeddingModel:
