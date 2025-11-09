@@ -6,7 +6,9 @@
   "main": "api_server.js",
   "scripts": {
     "test": "node test_gemma3_node.js",
+    "test:fast": "node test_gemma3_q4_fast.js",
     "start": "node api_server.js",
+    "start:fast": "node api_server_q4.js",
     "benchmark": "node benchmark_gemma3.js"
   },
   "keywords": [
