@@ -45,6 +45,16 @@ comparison_*.csv
 comparison_*.txt
 similarity_dist.png
 
+# Node.js
+node_modules/
+package-lock.json
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm
+.eslintcache
+.node_repl_history
+
 # OS
 .DS_Store
 Thumbs.db
