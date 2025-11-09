@@ -79,7 +79,7 @@ async function testUltraFast() {
     tpsList.push(tps);
     tokenCounts.push(tokens);
 
-    console.log(`  Iter ${i+1:2d}: ${time.toFixed(3)}s | ${tps.toFixed(1)} tok/s | ${tokens} tokens`);
+    console.log(`  Iter ${(i+1).toString().padStart(2, ' ')}: ${time.toFixed(3)}s | ${tps.toFixed(1)} tok/s | ${tokens} tokens`);
   }
 
   console.log();
