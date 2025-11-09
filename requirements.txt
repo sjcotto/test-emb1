@@ -9,3 +9,8 @@ requests>=2.31.0
 tqdm>=4.66.0
 matplotlib>=3.7.0
 psutil>=5.9.0
+
+# Optional: For optimized CPU inference (2-4x speedup)
+# Uncomment the ones you want to use:
+# onnxruntime>=1.16.0          # ONNX Runtime for fast CPU inference
+# optimum[onnxruntime]>=1.16.0 # HuggingFace Optimum for easy ONNX export
